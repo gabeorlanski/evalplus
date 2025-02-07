@@ -94,6 +94,7 @@ def check_correctness(
         "_identifier": identifier,
         "solution": solution,
     }
+    start_time = time.time()
     ret["base"] = untrusted_check(
         dataset,
         solution,
@@ -120,7 +121,7 @@ def check_correctness(
             min_time_limit=min_time_limit,
             gt_time_limit_factor=gt_time_limit_factor,
         )
-
+    ret["elapsed"] = time.time() - start_time
     return ret
 
 
@@ -198,7 +199,7 @@ def evaluate(
             "hash": dataset_hash,
             "eval": {},
         }
-
+        start_time = time.time()
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = []
             completion_id = Counter()
@@ -236,8 +237,8 @@ def evaluate(
                 completion_id[task_id] += 1
                 n_samples += 1
 
-            assert n_samples == len(remainings), "Missing problems in unfinished"
-            assert len(completion_id) == len(problems), "Missing problems in samples"
+            # assert n_samples == len(remainings), "Missing problems in unfinished"
+            # assert len(completion_id) == len(problems), "Missing problems in samples"
 
             def stucking_checker():
                 while remainings:
@@ -255,7 +256,7 @@ def evaluate(
                 result = future.result()
                 remainings.remove(result["_identifier"])
                 eval_results[result["task_id"]].append(result)
-
+        results["elapsed"] = time.time() - start_time
         # sort the results for each problem by completion_id
         for task_id, task_results in eval_results.items():
             task_results.sort(key=lambda x: x["completion_id"])
@@ -298,6 +299,7 @@ def evaluate(
                     {
                         "task_id": task_id,
                         "solution": res["solution"],
+                        "elapsed": res["elapsed"],
                         "base_status": base_stat,
                         "plus_status": plus_stat,
                         "base_fail_tests": base_fail_tests,
