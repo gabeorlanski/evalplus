@@ -131,6 +131,7 @@ def unsafe_execute(
     stat,  # Value
     details,  # Array
     progress,  # Value
+    timings,  # Array
 ):
     with create_tempdir():
         # These system calls are needed when cleaning up tempdir.
@@ -149,10 +150,12 @@ def unsafe_execute(
 
             for i, inp in enumerate(inputs):
                 try:
+                    start = time.time()
                     with time_limit(time_limits[i]):
                         with swallow_io():
                             out = fn(*inp)
-
+                    elapsed = time.time() - start
+                    timings[i] = elapsed
                     exp = expected[i]
                     exact_match = out == exp
 
@@ -233,7 +236,7 @@ def untrusted_check(
     fast_check: bool = False,
     min_time_limit: float = DEFAULT_MIN_TIME_LIMIT,
     gt_time_limit_factor: float = DEFAULT_GT_TIME_LIMIT_FACTOR,
-) -> Tuple[str, np.ndarray]:
+) -> Tuple[str, np.ndarray, np.ndarray]:
     time_limits = [max(min_time_limit, gt_time_limit_factor * t) for t in ref_time]
     timeout = min(os.getenv("EVALPLUS_TIMEOUT_PER_TASK", 60), sum(time_limits)) + 1
     if not fast_check:
@@ -243,6 +246,7 @@ def untrusted_check(
     progress = Value("i", 0)
     stat = Value("i", _UNKNOWN)
     details = Array("b", [False for _ in range(len(inputs))])
+    timings = Array("d", [float("inf") for _ in range(len(inputs))])
 
     p = multiprocessing.Process(
         target=unsafe_execute,
@@ -259,6 +263,7 @@ def untrusted_check(
             stat,
             details,
             progress,
+            timings,
         ),
     )
     p.start()
@@ -272,7 +277,7 @@ def untrusted_check(
 
     stat = _mapping[stat.value]
     details = details[: progress.value]
-
+    timings = timings[: progress.value]
     if not stat:
         stat = TIMEOUT
 
@@ -280,7 +285,7 @@ def untrusted_check(
         if len(details) != len(inputs) or not all(details):
             stat = FAIL
 
-    return stat, details
+    return stat, details, timings
 
 
 def evaluate_files(

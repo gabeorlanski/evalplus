@@ -114,6 +114,9 @@ def load_solutions(sample_path: PathLike) -> Iterable[Dict]:
             )
             yield sample
     else:
+        with open(os.path.join(sample_path, "pred_map.json"), "r") as f:
+            pred_map = json.load(f)
+
         # if it is a folder
         for task_id in os.listdir(sample_path):
             task_path = os.path.join(sample_path, task_id)
@@ -123,6 +126,8 @@ def load_solutions(sample_path: PathLike) -> Iterable[Dict]:
             for solution_id in os.listdir(task_path):
                 solution_path = os.path.join(task_path, solution_id)
                 if os.path.isfile(solution_path) and solution_path.endswith(".py"):
+                    completion_id = int(solution_id.split(".")[0])
+                    key = f"{task_id}/{completion_id}"
                     with open(solution_path, "r") as f:
                         completion = f.read()
                     yield {
@@ -130,6 +135,8 @@ def load_solutions(sample_path: PathLike) -> Iterable[Dict]:
                         "_path": solution_path,
                         "task_id": task_id.replace("_", "/"),
                         "solution": completion,
+                        "count": pred_map[key]["count"],
+                        "completion_id": completion_id,
                     }
 
 

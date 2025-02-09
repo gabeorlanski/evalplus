@@ -199,6 +199,7 @@ def evaluate(
             "hash": dataset_hash,
             "eval": {},
         }
+        sample_meta_map = {}
         start_time = time.time()
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = []
@@ -236,6 +237,10 @@ def evaluate(
                 futures.append(executor.submit(check_correctness, *args))
                 completion_id[task_id] += 1
                 n_samples += 1
+                sample_meta_map[sample["_identifier"]] = {
+                    "count": sample["count"],
+                    "completion_id": sample["completion_id"],
+                }
 
             # assert n_samples == len(remainings), "Missing problems in unfinished"
             # assert len(completion_id) == len(problems), "Missing problems in samples"
@@ -275,7 +280,7 @@ def evaluate(
                     # else => simply return the only and the last fail test
                     return [inputs[len(details) - 1]]
 
-                base_stat, base_details = res["base"]
+                base_stat, base_details, base_timings = res["base"]
                 base_fail_tests = get_failed_tests(
                     base_stat, base_details, problems[task_id]["base_input"]
                 )
@@ -286,7 +291,7 @@ def evaluate(
 
                 # with plus tests
                 if not base_only:
-                    plus_stat, plus_details = res["plus"]
+                    plus_stat, plus_details, plus_timings = res["plus"]
                     plus_fail_tests = get_failed_tests(
                         plus_stat, plus_details, problems[task_id]["plus_input"]
                     )
@@ -304,26 +309,30 @@ def evaluate(
                         "plus_status": plus_stat,
                         "base_fail_tests": base_fail_tests,
                         "plus_fail_tests": plus_fail_tests,
+                        "base_timings": base_timings,
+                        "plus_timings": plus_timings,
+                        **sample_meta_map[res["_identifier"]],
                     }
                 )
 
     # Calculate pass@k.
-    total = np.array([len(r) for r in results["eval"].values()])
+    total = []
     base_correct = []
     new_correct = []
 
     for res in results["eval"].values():
-        bc = sum([r["base_status"] == PASS for r in res])
+        bc = nc = rt = 0
+        for r in res:
+            rt += r["count"]
+            bc += (r["base_status"] == PASS) * r["count"]
+            if not base_only:
+                nc += (r["plus_status"] == PASS) * r["count"]
+        total.append(rt)
         base_correct.append(bc)
         if not base_only:
-            new_correct.append(
-                sum(
-                    [
-                        res[i]["base_status"] == res[i]["plus_status"] == PASS
-                        for i in range(len(res))
-                    ]
-                )
-            )
+            new_correct.append(nc)
+
+    total = np.array(total)
     base_correct = np.array(base_correct)
 
     pass_at_k = {
