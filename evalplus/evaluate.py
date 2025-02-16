@@ -307,10 +307,10 @@ def evaluate(
                         "elapsed": res["elapsed"],
                         "base_status": base_stat,
                         "plus_status": plus_stat,
-                        "base_fail_tests": base_fail_tests,
-                        "plus_fail_tests": plus_fail_tests,
                         "base_timings": base_timings,
                         "plus_timings": plus_timings,
+                        "base_details": base_details,
+                        "plus_details": plus_details,
                         **sample_meta_map[res["_identifier"]],
                     }
                 )
