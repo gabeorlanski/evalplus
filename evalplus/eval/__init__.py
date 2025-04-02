@@ -43,6 +43,7 @@ from evalplus.eval.utils import (
     reliability_guard,
     swallow_io,
     time_limit,
+    TimeoutException,
 )
 
 
@@ -132,6 +133,7 @@ def unsafe_execute(
     details,  # Array
     progress,  # Value
     timings,  # Array
+    timed_out,  # Value
 ):
     with create_tempdir():
         # These system calls are needed when cleaning up tempdir.
@@ -206,8 +208,9 @@ def unsafe_execute(
                         assert np.allclose(out, exp, rtol=1e-07, atol=atol)
                     else:
                         assert exact_match
-                except BaseException:
+                except BaseException as e:
                     details[i] = False
+                    timed_out.value = 1 if isinstance(e, TimeoutException) else 0
                     progress.value += 1
                     if fast_check:
                         raise
@@ -215,6 +218,7 @@ def unsafe_execute(
 
                 details[i] = True
                 progress.value += 1
+                timed_out.value = 0
 
             stat.value = _SUCCESS
         except BaseException:
@@ -247,6 +251,7 @@ def untrusted_check(
     stat = Value("i", _UNKNOWN)
     details = Array("b", [False for _ in range(len(inputs))])
     timings = Array("d", [float("inf") for _ in range(len(inputs))])
+    timed_out = Value("i", 0)
 
     p = multiprocessing.Process(
         target=unsafe_execute,
@@ -264,12 +269,14 @@ def untrusted_check(
             details,
             progress,
             timings,
+            timed_out,
         ),
     )
     p.start()
     p.join(timeout=timeout + 1)
     if p.is_alive():
         p.terminate()
+        timed_out.value = 1
         time.sleep(0.1)
     if p.is_alive():
         p.kill()
@@ -278,7 +285,7 @@ def untrusted_check(
     stat = _mapping[stat.value]
     details = details[: progress.value]
     timings = timings[: progress.value]
-    if not stat:
+    if not stat or timed_out.value == 1:
         stat = TIMEOUT
 
     if stat == PASS:

@@ -3,7 +3,6 @@ import multiprocessing
 import os
 import pickle
 import threading
-import time
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -13,6 +12,8 @@ from warnings import warn
 import numpy as np
 from termcolor import cprint
 from tqdm import tqdm
+from datetime import timezone
+import time
 
 from evalplus.codegen import run_codegen
 from evalplus.config import *
@@ -39,16 +40,18 @@ from evalplus.gen.util import trusted_exec
 Result = Tuple[str, List[bool]]
 
 
-def get_groundtruth(problems, hashcode, tasks_only_output_not_none):
+def get_groundtruth(
+    problems, hashcode, tasks_only_output_not_none, disable_cache=False
+):
     cache_file = os.path.join(CACHE_DIR, f"{hashcode}.pkl")
-    if os.path.exists(cache_file):
+    if os.path.exists(cache_file) and not disable_cache:
         print(f"Load from ground-truth from {cache_file}")
         with open(cache_file, "rb") as f:
             return pickle.load(f)
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     print("Computing expected output...")
-    tbegin = time.time()
+    tbegin = datetime.now(timezone.utc)
     expected_output = {}
     for task_id, problem in problems.items():
         oracle = {}
@@ -68,12 +71,14 @@ def get_groundtruth(problems, hashcode, tasks_only_output_not_none):
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
         )
         expected_output[task_id] = oracle
-    print(f"Expected outputs computed in {time.time() - tbegin:.2f}s")
+    elapsed = (datetime.now(timezone.utc) - tbegin).total_seconds()
+
+    print(f"Expected outputs computed in {elapsed:.2f}s")
 
     with open(cache_file, "wb") as f:
         pickle.dump(expected_output, f)
 
-    return expected_output
+    return expected_output, elapsed
 
 
 def check_correctness(
@@ -87,6 +92,7 @@ def check_correctness(
     identifier=None,
     min_time_limit: float = DEFAULT_MIN_TIME_LIMIT,
     gt_time_limit_factor: float = DEFAULT_GT_TIME_LIMIT_FACTOR,
+    max_test_cases: Optional[int] = None,
 ) -> Dict[str, Result]:  # {...}, "base" | "plus" -> (status, details)
     ret = {
         "completion_id": completion_id,
@@ -94,11 +100,22 @@ def check_correctness(
         "_identifier": identifier,
         "solution": solution,
     }
-    start_time = time.time()
+    start_time = datetime.now(timezone.utc)
+    base_inputs = problem["base_input"]
+    run_plus = not base_only
+    plus_inputs = problem["plus_input"]
+    if max_test_cases is not None:
+        if len(base_inputs) >= max_test_cases:
+            run_plus = False
+            base_inputs = base_inputs[:max_test_cases]
+        else:
+            new_max = max_test_cases - len(base_inputs)
+            plus_inputs = plus_inputs[:new_max]
+
     ret["base"] = untrusted_check(
         dataset,
         solution,
-        problem["base_input"],
+        base_inputs,
         problem["entry_point"],
         expected=expected_output["base"],
         atol=problem["atol"],
@@ -108,11 +125,11 @@ def check_correctness(
         gt_time_limit_factor=gt_time_limit_factor,
     )
 
-    if not base_only:
+    if run_plus and len(plus_inputs) > 0:
         ret["plus"] = untrusted_check(
             dataset,
             solution,
-            problem["plus_input"],
+            plus_inputs,
             problem["entry_point"],
             expected=expected_output["plus"],
             atol=problem["atol"],
@@ -121,7 +138,7 @@ def check_correctness(
             min_time_limit=min_time_limit,
             gt_time_limit_factor=gt_time_limit_factor,
         )
-    ret["elapsed"] = time.time() - start_time
+    ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
     return ret
 
 
@@ -139,6 +156,8 @@ def evaluate(
     version: str = "default",
     output_file: Optional[str] = None,
     gguf_file: Optional[str] = None,
+    disable_cache: bool = False,
+    max_test_cases: Optional[int] = None,
     **model_kwargs,
 ):
     if model_kwargs:
@@ -182,25 +201,27 @@ def evaluate(
             dataset_hash = get_human_eval_plus_hash(
                 mini=mini, noextreme=noextreme, version=version
             )
-            expected_output = get_groundtruth(problems, dataset_hash, [])
+            expected_output, get_gt_elapsed = get_groundtruth(
+                problems, dataset_hash, [], disable_cache=disable_cache
+            )
         elif dataset == "mbpp":
             problems = get_mbpp_plus(mini=mini, noextreme=noextreme, version=version)
             dataset_hash = get_mbpp_plus_hash(
                 mini=mini, noextreme=noextreme, version=version
             )
-            expected_output = get_groundtruth(
+            expected_output, get_gt_elapsed = get_groundtruth(
                 problems,
                 dataset_hash,
                 MBPP_OUTPUT_NOT_NONE_TASKS,
+                disable_cache=disable_cache,
             )
-
         results = {
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "hash": dataset_hash,
             "eval": {},
         }
         sample_meta_map = {}
-        start_time = time.time()
+        start_time = datetime.now(timezone.utc)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = []
             completion_id = Counter()
@@ -233,14 +254,12 @@ def evaluate(
                     sample["_identifier"],
                     min_time_limit,
                     gt_time_limit_factor,
+                    max_test_cases,
                 )
                 futures.append(executor.submit(check_correctness, *args))
                 completion_id[task_id] += 1
                 n_samples += 1
-                sample_meta_map[sample["_identifier"]] = {
-                    "count": sample["count"],
-                    "completion_id": sample["completion_id"],
-                }
+                sample_meta_map[sample["_identifier"]] = sample["meta"]
 
             # assert n_samples == len(remainings), "Missing problems in unfinished"
             # assert len(completion_id) == len(problems), "Missing problems in samples"
@@ -261,7 +280,10 @@ def evaluate(
                 result = future.result()
                 remainings.remove(result["_identifier"])
                 eval_results[result["task_id"]].append(result)
-        results["elapsed"] = time.time() - start_time
+        results["execution_elapsed"] = (
+            datetime.now(timezone.utc) - start_time
+        ).total_seconds()
+        results["get_gt_elapsed"] = get_gt_elapsed
         # sort the results for each problem by completion_id
         for task_id, task_results in eval_results.items():
             task_results.sort(key=lambda x: x["completion_id"])
