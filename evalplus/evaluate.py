@@ -28,6 +28,7 @@ from evalplus.data.mbpp import mbpp_serialize_inputs
 from evalplus.data.utils import CACHE_DIR
 from evalplus.eval import (
     PASS,
+    FAIL,
     compatible_eval_result,
     estimate_pass_at_k,
     untrusted_check,
@@ -138,6 +139,8 @@ def check_correctness(
             min_time_limit=min_time_limit,
             gt_time_limit_factor=gt_time_limit_factor,
         )
+    else:
+        ret["plus"] = (FAIL, [], [])
     ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
     return ret
 
