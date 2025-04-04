@@ -133,7 +133,6 @@ def unsafe_execute(
     details,  # Array
     progress,  # Value
     timings,  # Array
-    timed_out,  # Value
 ):
     with create_tempdir():
         # These system calls are needed when cleaning up tempdir.
@@ -146,9 +145,12 @@ def unsafe_execute(
         reliability_guard(maximum_memory_bytes=query_maximum_memory_bytes())
         exec_globals = {}
         try:
+            start = time.time()
+            passed_initial_exec = False
             with swallow_io():
                 exec(code, exec_globals)
                 fn = exec_globals[entry_point]
+            passed_initial_exec = True
 
             for i, inp in enumerate(inputs):
                 try:
@@ -156,6 +158,7 @@ def unsafe_execute(
                     with time_limit(time_limits[i]):
                         with swallow_io():
                             out = fn(*inp)
+
                     elapsed = time.time() - start
                     timings[i] = elapsed
                     exp = expected[i]
@@ -208,21 +211,25 @@ def unsafe_execute(
                         assert np.allclose(out, exp, rtol=1e-07, atol=atol)
                     else:
                         assert exact_match
-                except BaseException as e:
+                except BaseException:
                     details[i] = False
-                    timed_out.value = 1 if isinstance(e, TimeoutException) else 0
                     progress.value += 1
                     if fast_check:
-                        raise
+                        raise e
                     continue
 
                 details[i] = True
                 progress.value += 1
-                timed_out.value = 0
 
             stat.value = _SUCCESS
-        except BaseException:
-            stat.value = _FAILED
+        except BaseException as e:
+            if not passed_initial_exec:
+                timings[0] = time.time() - start
+
+            if isinstance(e, TimeoutException):
+                stat.value = _TIMEOUT
+            else:
+                stat.value = _FAILED
         # Needed for cleaning up.
         shutil.rmtree = rmtree
         os.rmdir = rmdir
@@ -240,9 +247,13 @@ def untrusted_check(
     fast_check: bool = False,
     min_time_limit: float = DEFAULT_MIN_TIME_LIMIT,
     gt_time_limit_factor: float = DEFAULT_GT_TIME_LIMIT_FACTOR,
+    max_time_limit: Optional[float] = None,
 ) -> Tuple[str, np.ndarray, np.ndarray]:
     time_limits = [max(min_time_limit, gt_time_limit_factor * t) for t in ref_time]
-    timeout = min(os.getenv("EVALPLUS_TIMEOUT_PER_TASK", 60), sum(time_limits)) + 1
+    if max_time_limit is not None:
+        timeout = max_time_limit
+    else:
+        timeout = min(os.getenv("EVALPLUS_TIMEOUT_PER_TASK", 60), sum(time_limits)) + 1
     if not fast_check:
         timeout += 1  # extra time for data collection
 
@@ -251,8 +262,7 @@ def untrusted_check(
     stat = Value("i", _UNKNOWN)
     details = Array("b", [False for _ in range(len(inputs))])
     timings = Array("d", [float("inf") for _ in range(len(inputs))])
-    timed_out = Value("i", 0)
-
+    timed_out = False
     p = multiprocessing.Process(
         target=unsafe_execute,
         args=(
@@ -269,23 +279,23 @@ def untrusted_check(
             details,
             progress,
             timings,
-            timed_out,
         ),
     )
     p.start()
     p.join(timeout=timeout + 1)
     if p.is_alive():
         p.terminate()
-        timed_out.value = 1
+        timed_out = True
         time.sleep(0.1)
     if p.is_alive():
         p.kill()
+        timed_out = True
         time.sleep(0.1)
 
     stat = _mapping[stat.value]
     details = details[: progress.value]
     timings = timings[: progress.value]
-    if not stat or timed_out.value == 1:
+    if not stat or timed_out:
         stat = TIMEOUT
 
     if stat == PASS:

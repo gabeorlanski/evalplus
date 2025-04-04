@@ -28,6 +28,7 @@ from evalplus.data.mbpp import mbpp_serialize_inputs
 from evalplus.data.utils import CACHE_DIR
 from evalplus.eval import (
     PASS,
+    FAIL,
     compatible_eval_result,
     estimate_pass_at_k,
     untrusted_check,
@@ -38,6 +39,8 @@ from evalplus.gen.util import trusted_exec
 # 1st item: the status
 # 2nd item (optional): the detailed pass/fail boolean for each input
 Result = Tuple[str, List[bool]]
+NOT_RAN = ("NOT_RAN", [], [])
+DEFAULT_FAIL = ("FAIL", [], [])
 
 
 def get_groundtruth(
@@ -93,6 +96,8 @@ def check_correctness(
     min_time_limit: float = DEFAULT_MIN_TIME_LIMIT,
     gt_time_limit_factor: float = DEFAULT_GT_TIME_LIMIT_FACTOR,
     max_test_cases: Optional[int] = None,
+    max_time_limit: float = None,
+    early_stop: bool = False,
 ) -> Dict[str, Result]:  # {...}, "base" | "plus" -> (status, details)
     ret = {
         "completion_id": completion_id,
@@ -123,8 +128,11 @@ def check_correctness(
         fast_check=fast_check,
         min_time_limit=min_time_limit,
         gt_time_limit_factor=gt_time_limit_factor,
+        max_time_limit=max_time_limit,
     )
 
+    if ret["base"][0] != PASS and early_stop:
+        run_plus = False
     if run_plus and len(plus_inputs) > 0:
         ret["plus"] = untrusted_check(
             dataset,
@@ -137,7 +145,13 @@ def check_correctness(
             fast_check=fast_check,
             min_time_limit=min_time_limit,
             gt_time_limit_factor=gt_time_limit_factor,
+            max_time_limit=max_time_limit,
         )
+    else:
+        if base_only or len(plus_inputs) == 0:
+            ret["plus"] = NOT_RAN
+        else:
+            ret["plus"] = DEFAULT_FAIL
     ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
     return ret
 
@@ -158,6 +172,8 @@ def evaluate(
     gguf_file: Optional[str] = None,
     disable_cache: bool = False,
     max_test_cases: Optional[int] = None,
+    max_time_limit: float = None,
+    early_stop: bool = False,
     **model_kwargs,
 ):
     if model_kwargs:
@@ -255,6 +271,8 @@ def evaluate(
                     min_time_limit,
                     gt_time_limit_factor,
                     max_test_cases,
+                    max_time_limit,
+                    early_stop,
                 )
                 futures.append(executor.submit(check_correctness, *args))
                 completion_id[task_id] += 1
@@ -291,7 +309,7 @@ def evaluate(
             for res in task_results:
 
                 def get_failed_tests(stat, details, inputs) -> List[Any]:
-                    if stat == PASS or not details:
+                    if not details:
                         return []
 
                     if test_details:
@@ -313,7 +331,7 @@ def evaluate(
 
                 # with plus tests
                 if not base_only:
-                    plus_stat, plus_details, plus_timings = res["plus"]
+                    plus_stat, plus_details, plus_timings = res.get("plus", NOT_RAN)
                     plus_fail_tests = get_failed_tests(
                         plus_stat, plus_details, problems[task_id]["plus_input"]
                     )
@@ -331,8 +349,8 @@ def evaluate(
                         "plus_status": plus_stat,
                         "base_timings": base_timings,
                         "plus_timings": plus_timings,
-                        "base_details": base_details,
-                        "plus_details": plus_details,
+                        "base_details": [bool(d) for d in base_details],
+                        "plus_details": [bool(d) for d in plus_details],
                         **sample_meta_map[res["_identifier"]],
                     }
                 )
@@ -345,10 +363,10 @@ def evaluate(
     for res in results["eval"].values():
         bc = nc = rt = 0
         for r in res:
-            rt += r["count"]
-            bc += (r["base_status"] == PASS) * r["count"]
+            rt += 1
+            bc += r["base_status"] == PASS
             if not base_only:
-                nc += (r["plus_status"] == PASS) * r["count"]
+                nc += r["plus_status"] == PASS
         total.append(rt)
         base_correct.append(bc)
         if not base_only:
