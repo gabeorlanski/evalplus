@@ -46,11 +46,13 @@ DEFAULT_FAIL = ("FAIL", [], [])
 def get_groundtruth(
     problems, hashcode, tasks_only_output_not_none, disable_cache=False
 ):
+
+    tbegin = datetime.now(timezone.utc)
     cache_file = os.path.join(CACHE_DIR, f"{hashcode}.pkl")
     if os.path.exists(cache_file) and not disable_cache:
         print(f"Load from ground-truth from {cache_file}")
         with open(cache_file, "rb") as f:
-            return pickle.load(f)
+            return pickle.load(f), (datetime.now(timezone.utc) - tbegin).total_seconds()
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     print("Computing expected output...")
