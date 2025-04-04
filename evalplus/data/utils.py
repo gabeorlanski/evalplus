@@ -114,6 +114,7 @@ def load_solutions(sample_path: PathLike) -> Iterable[Dict]:
             )
             yield sample
     else:
+
         if os.path.exists(os.path.join(sample_path, "pred_map.json")):
             with open(os.path.join(sample_path, "pred_map.json"), "r") as f:
                 pred_map = json.load(f)

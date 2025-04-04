@@ -40,7 +40,7 @@ from evalplus.gen.util import trusted_exec
 # 2nd item (optional): the detailed pass/fail boolean for each input
 Result = Tuple[str, List[bool]]
 NOT_RAN = ("NOT_RAN", [], [])
-DEFAULT_FAIL = ("FAIL", [], [])
+DEFAULT_FAIL = (FAIL, [], [])
 
 
 def get_groundtruth(
@@ -56,7 +56,6 @@ def get_groundtruth(
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     print("Computing expected output...")
-    tbegin = datetime.now(timezone.utc)
     expected_output = {}
     for task_id, problem in problems.items():
         oracle = {}
@@ -152,6 +151,8 @@ def check_correctness(
     else:
         if base_only or len(plus_inputs) == 0:
             ret["plus"] = NOT_RAN
+        elif early_stop and ret["base"][0] != PASS:
+            ret["plus"] = NOT_RAN
         else:
             ret["plus"] = DEFAULT_FAIL
     ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -238,6 +239,8 @@ def evaluate(
             "hash": dataset_hash,
             "eval": {},
         }
+        print(f"Using {max_test_cases} max tests")
+        print(f"Using {max_time_limit} max timeout")
         sample_meta_map = {}
         start_time = datetime.now(timezone.utc)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
