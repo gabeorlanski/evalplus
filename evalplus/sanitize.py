@@ -74,10 +74,41 @@ def get_function_dependency(entrypoint: str, call_graph: Dict[str, str]) -> Set[
     return visited
 
 
-def get_definition_name(node: Node) -> str:
-    for child in node.children:
-        if child.type == IDENTIFIER_TYPE:
-            return child.text.decode("utf8")
+# Mapping node types to categories for spacing rules
+type_map = {
+    **{t: "import" for t in IMPORT_TYPE},
+    FUNCTION_TYPE: "definition",
+    CLASS_TYPE: "definition",
+    # Consider top-level assignments captured via ExpressionStatement as definitions for spacing
+    EXPRESSION_TYPE: "definition",
+}
+
+
+def get_definition_name(node: Node) -> Optional[str]:
+    # Handle direct Function/Class definitions
+    if node.type in [FUNCTION_TYPE, CLASS_TYPE]:
+        for child in node.children:
+            if child.type == IDENTIFIER_TYPE:
+                return child.text.decode("utf8")
+    # Handle assignments (e.g., x = ...) potentially wrapped in ExpressionStatement
+    elif (
+        node.type == EXPRESSION_TYPE
+        and node.children
+        and node.children[0].type == ASSIGNMENT_TYPE
+    ):
+        assign_node = node.children[0]
+        # Traverse the assignment node to find the identifier being assigned to
+        target_node = assign_node.child_by_field_name("left")
+        if target_node and target_node.type == IDENTIFIER_TYPE:
+            return target_node.text.decode("utf8")
+    elif (
+        node.type == ASSIGNMENT_TYPE
+    ):  # Handle raw assignment if it's somehow a direct child
+        target_node = node.child_by_field_name("left")
+        if target_node and target_node.type == IDENTIFIER_TYPE:
+            return target_node.text.decode("utf8")
+
+    return None  # Return None if name cannot be extracted
 
 
 def traverse_tree(node: Node) -> Generator[Node, None, None]:
@@ -109,65 +140,123 @@ def has_return_statement(node: Node) -> bool:
 
 def extract_target_code_or_empty(code: str, entrypoint: Optional[str] = None) -> str:
     code = code_extract(code)
+    if not code:  # Handle empty code after extraction
+        return ""
+
     code_bytes = bytes(code, "utf8")
     parser = Parser(Language(tree_sitter_python.language()))
     tree = parser.parse(code_bytes)
+
     class_names = set()
     function_names = set()
     variable_names = set()
 
     root_node = tree.root_node
     import_nodes = []
-    definition_nodes = []
+    # Stores tuples of (name, node_object, node_category)
+    definition_node_info = []
 
     for child in root_node.children:
-        if child.type in IMPORT_TYPE:
+        node_type_str = child.type
+        category = type_map.get(node_type_str, "other")
+        name = get_definition_name(child)
+
+        if category == "import":
             import_nodes.append(child)
-        elif child.type == CLASS_TYPE:
-            name = get_definition_name(child)
-            if not (
-                name in class_names or name in variable_names or name in function_names
-            ):
-                definition_nodes.append((name, child))
+        elif category == "definition" and name:
+            # Check for duplicates based on name
+            if name in class_names or name in variable_names or name in function_names:
+                continue
+
+            # Specific handling based on definition type
+            if node_type_str == CLASS_TYPE:
+                definition_node_info.append((name, child, category))
                 class_names.add(name)
-        elif child.type == FUNCTION_TYPE:
-            name = get_definition_name(child)
-            if not (
-                name in function_names or name in variable_names or name in class_names
-            ) and has_return_statement(child):
-                definition_nodes.append((name, child))
-                function_names.add(get_definition_name(child))
-        elif (
-            child.type == EXPRESSION_TYPE and child.children[0].type == ASSIGNMENT_TYPE
-        ):
-            subchild = child.children[0]
-            name = get_definition_name(subchild)
-            if not (
-                name in variable_names or name in function_names or name in class_names
+            elif node_type_str == FUNCTION_TYPE:
+                # Ensure function has a return statement before adding
+                if has_return_statement(child):
+                    definition_node_info.append((name, child, category))
+                    function_names.add(name)
+            elif (
+                node_type_str == EXPRESSION_TYPE
+                and child.children
+                and child.children[0].type == ASSIGNMENT_TYPE
             ):
-                definition_nodes.append((name, subchild))
+                # Successfully extracted name from assignment via get_definition_name
+                definition_node_info.append((name, child, category))
                 variable_names.add(name)
 
+    reacheable = set()
     if entrypoint:
-        name2deps = get_deps(definition_nodes)
+        # Extract just (name, node) pairs for dependency analysis
+        definition_nodes_for_deps = [
+            (name, node) for name, node, cat in definition_node_info
+        ]
+        name2deps = get_deps(definition_nodes_for_deps)
         reacheable = get_function_dependency(entrypoint, name2deps)
+        # Add the entrypoint itself to reachable if it exists
+        all_defined_names = class_names | function_names | variable_names
+        if entrypoint in all_defined_names:
+            reacheable.add(entrypoint)
+
+    # --- Start Building Output ---
+    nodes_to_keep_info = []  # Stores tuples of (node, category)
+    kept_node_starts = set()  # Track start bytes to avoid adding duplicates
+
+    # Add necessary imports (Refinement: Ideally, filter based on actual usage by reachable code)
+    for node in import_nodes:
+        if node.start_byte not in kept_node_starts:
+            nodes_to_keep_info.append((node, "import"))
+            kept_node_starts.add(node.start_byte)
+
+    # Add reachable definitions
+    for name, node, category in definition_node_info:
+        if node.start_byte not in kept_node_starts:
+            # Keep if no entrypoint OR if name is reachable
+            if not entrypoint or name in reacheable:
+                nodes_to_keep_info.append((node, category))
+                kept_node_starts.add(node.start_byte)
+
+    # Sort all nodes to keep by their starting position in the original code
+    nodes_to_keep_info.sort(key=lambda item: item[0].start_byte)
 
     sanitized_output = b""
+    for i, (current_node, current_category) in enumerate(nodes_to_keep_info):
+        # Append the code corresponding to the current node
+        start = current_node.start_byte
+        end = current_node.end_byte
+        # Ensure start/end are valid indices for slicing
+        if start < end and end <= len(code_bytes):
+            sanitized_output += code_bytes[start:end]
 
-    for node in import_nodes:
-        sanitized_output += code_bytes[node.start_byte : node.end_byte] + b"\n"
+        # Determine and append spacing based on the next node, if it exists
+        if i < len(nodes_to_keep_info) - 1:
+            next_node, next_category = nodes_to_keep_info[i + 1]
 
-    for pair in definition_nodes:
-        name, node = pair
-        if entrypoint and not (name in reacheable):
-            continue
-        sanitized_output += code_bytes[node.start_byte : node.end_byte] + b"\n\n"
-    return sanitized_output[:-1].decode("utf8")
+            # Apply PEP8-like spacing rules
+            if current_category == "import" and next_category == "import":
+                sanitized_output += b"\n"
+            elif current_category == "import" and next_category == "definition":
+                sanitized_output += b"\n\n"
+            elif current_category == "definition" and next_category == "definition":
+                sanitized_output += b"\n\n"
+            elif current_category == "definition" and next_category == "import":
+                # Should not happen if imports are first, handle defensively
+                sanitized_output += b"\n\n"
+            else:  # Default fallback
+                sanitized_output += b"\n"
+
+    # Decode the result from bytes to string
+    final_code = sanitized_output.decode("utf8")
+
+    return final_code
 
 
 def sanitize(code: str, entrypoint: Optional[str] = None) -> str:
-    sanitized_code = extract_target_code_or_empty(code, entrypoint).strip()
-    if not sanitized_code:
+    # Pass entrypoint to the extraction function
+    sanitized_code = extract_target_code_or_empty(code, entrypoint)
+    # Fallback to basic syntax extraction if sanitization yields empty result
+    if not sanitized_code.strip():
         return code_extract(code)
     return sanitized_code
 
