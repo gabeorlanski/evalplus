@@ -161,7 +161,7 @@ def extract_target_code_or_empty(code: str, entrypoint: Optional[str] = None) ->
         name, node = pair
         if entrypoint and not (name in reacheable):
             continue
-        sanitized_output += code_bytes[node.start_byte : node.end_byte] + b"\n"
+        sanitized_output += code_bytes[node.start_byte : node.end_byte] + b"\n\n"
     return sanitized_output[:-1].decode("utf8")
 
 
