@@ -29,6 +29,7 @@ from evalplus.data.utils import CACHE_DIR
 from evalplus.eval import (
     PASS,
     FAIL,
+    NOT_RAN,
     compatible_eval_result,
     estimate_pass_at_k,
     untrusted_check,
@@ -39,7 +40,6 @@ from evalplus.gen.util import trusted_exec
 # 1st item: the status
 # 2nd item (optional): the detailed pass/fail boolean for each input
 Result = Tuple[str, List[bool]]
-NOT_RAN = "NOT_RAN"
 NOT_RAN_RES = (NOT_RAN, [], [])
 DEFAULT_FAIL = (FAIL, [], [])
 

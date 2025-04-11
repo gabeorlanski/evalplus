@@ -88,6 +88,7 @@ def estimate_pass_at_k(
 PASS = "pass"
 FAIL = "fail"
 TIMEOUT = "timeout"
+NOT_RAN = "not_ran"
 
 _SUCCESS = 0
 _FAILED = 1
