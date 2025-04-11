@@ -39,7 +39,8 @@ from evalplus.gen.util import trusted_exec
 # 1st item: the status
 # 2nd item (optional): the detailed pass/fail boolean for each input
 Result = Tuple[str, List[bool]]
-NOT_RAN = ("NOT_RAN", [], [])
+NOT_RAN = "NOT_RAN"
+NOT_RAN_RES = (NOT_RAN, [], [])
 DEFAULT_FAIL = (FAIL, [], [])
 
 
@@ -92,13 +93,13 @@ def check_correctness(
     solution: str,
     expected_output: Dict[str, List],
     base_only=False,
+    plus_only=False,
     fast_check=False,
     identifier=None,
     min_time_limit: float = DEFAULT_MIN_TIME_LIMIT,
     gt_time_limit_factor: float = DEFAULT_GT_TIME_LIMIT_FACTOR,
     max_test_cases: Optional[int] = None,
     max_time_limit: float = None,
-    early_stop: bool = False,
 ) -> Dict[str, Result]:  # {...}, "base" | "plus" -> (status, details)
     ret = {
         "completion_id": completion_id,
@@ -109,30 +110,27 @@ def check_correctness(
     start_time = datetime.now(timezone.utc)
     base_inputs = problem["base_input"]
     run_plus = not base_only
+    run_base = not plus_only
     plus_inputs = problem["plus_input"]
     if max_test_cases is not None:
         base_inputs = base_inputs[:max_test_cases]
         plus_inputs = plus_inputs[:max_test_cases]
-
-    ret["base"] = untrusted_check(
-        dataset,
-        solution,
-        base_inputs,
-        problem["entry_point"],
-        expected=expected_output["base"],
-        atol=problem["atol"],
-        ref_time=expected_output["base_time"],
-        fast_check=fast_check,
-        min_time_limit=min_time_limit,
-        gt_time_limit_factor=gt_time_limit_factor,
-        max_time_limit=max_time_limit,
-    )
-
-    if len(plus_inputs) == 0:
-        run_plus = False
-        ret["plus"] = NOT_RAN
-    elif base_only:
-        ret["plus"] = NOT_RAN
+    if run_base:
+        ret["base"] = untrusted_check(
+            dataset,
+            solution,
+            base_inputs,
+            problem["entry_point"],
+            expected=expected_output["base"],
+            atol=problem["atol"],
+            ref_time=expected_output["base_time"],
+            fast_check=fast_check,
+            min_time_limit=min_time_limit,
+            gt_time_limit_factor=gt_time_limit_factor,
+            max_time_limit=max_time_limit,
+        )
+    else:
+        ret["base"] = NOT_RAN_RES
 
     if run_plus:
         ret["plus"] = untrusted_check(
@@ -148,10 +146,8 @@ def check_correctness(
             gt_time_limit_factor=gt_time_limit_factor,
             max_time_limit=max_time_limit,
         )
-    elif not run_plus:
-        ret["plus"] = NOT_RAN
     else:
-        ret["plus"] = DEFAULT_FAIL
+        ret["plus"] = NOT_RAN_RES
     ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
     return ret
 
@@ -160,6 +156,7 @@ def evaluate(
     dataset: str,
     samples: Optional[str] = None,
     base_only: bool = False,
+    plus_only: bool = False,
     parallel: Optional[int] = None,
     i_just_wanna_run: bool = False,
     test_details: bool = False,
@@ -173,7 +170,6 @@ def evaluate(
     disable_cache: bool = False,
     max_test_cases: Optional[int] = None,
     max_time_limit: float = None,
-    early_stop: bool = False,
     **model_kwargs,
 ):
     if model_kwargs:
@@ -268,13 +264,13 @@ def evaluate(
                     solution,
                     expected_output[task_id],
                     base_only,
+                    plus_only,
                     not test_details,  # fast_check
                     sample["_identifier"],
                     min_time_limit,
                     gt_time_limit_factor,
                     max_test_cases,
                     max_time_limit,
-                    early_stop,
                 )
                 futures.append(executor.submit(check_correctness, *args))
                 completion_id[task_id] += 1
@@ -322,18 +318,21 @@ def evaluate(
                     # else => simply return the only and the last fail test
                     return [inputs[len(details) - 1]]
 
-                base_stat, base_details, base_timings = res["base"]
-                base_fail_tests = get_failed_tests(
-                    base_stat, base_details, problems[task_id]["base_input"]
-                )
+                base_stat = NOT_RAN
+                base_details = []
+                if not base_only:
+                    base_stat, base_details, base_timings = res["base"]
+                    base_fail_tests = get_failed_tests(
+                        base_stat, base_details, problems[task_id]["base_input"]
+                    )
 
                 # initialize plus tests
-                plus_stat = None
+                plus_stat = NOT_RAN
                 plus_fail_tests = []
 
                 # with plus tests
                 if not base_only:
-                    plus_stat, plus_details, plus_timings = res.get("plus", NOT_RAN)
+                    plus_stat, plus_details, plus_timings = res.get("plus", NOT_RAN_RES)
                     plus_fail_tests = get_failed_tests(
                         plus_stat, plus_details, problems[task_id]["plus_input"]
                     )
