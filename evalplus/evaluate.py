@@ -111,12 +111,8 @@ def check_correctness(
     run_plus = not base_only
     plus_inputs = problem["plus_input"]
     if max_test_cases is not None:
-        if len(base_inputs) >= max_test_cases:
-            run_plus = False
-            base_inputs = base_inputs[:max_test_cases]
-        else:
-            new_max = max_test_cases - len(base_inputs)
-            plus_inputs = plus_inputs[:new_max]
+        base_inputs = base_inputs[:max_test_cases]
+        plus_inputs = plus_inputs[:max_test_cases]
 
     ret["base"] = untrusted_check(
         dataset,
@@ -132,9 +128,13 @@ def check_correctness(
         max_time_limit=max_time_limit,
     )
 
-    if ret["base"][0] != PASS and early_stop:
+    if len(plus_inputs) == 0:
         run_plus = False
-    if run_plus and len(plus_inputs) > 0:
+        ret["plus"] = NOT_RAN
+    elif base_only:
+        ret["plus"] = NOT_RAN
+
+    if run_plus:
         ret["plus"] = untrusted_check(
             dataset,
             solution,
@@ -148,13 +148,10 @@ def check_correctness(
             gt_time_limit_factor=gt_time_limit_factor,
             max_time_limit=max_time_limit,
         )
+    elif not run_plus:
+        ret["plus"] = NOT_RAN
     else:
-        if base_only or len(plus_inputs) == 0:
-            ret["plus"] = NOT_RAN
-        elif early_stop and ret["base"][0] != PASS:
-            ret["plus"] = NOT_RAN
-        else:
-            ret["plus"] = DEFAULT_FAIL
+        ret["plus"] = DEFAULT_FAIL
     ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
     return ret
 
