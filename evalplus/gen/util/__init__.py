@@ -4,7 +4,9 @@ from copy import deepcopy
 from evalplus.eval.utils import time_limit
 
 
-def trusted_exec(code, inputs, entry_point, record_time=False, output_not_none=False):
+def trusted_exec(
+    code, inputs, entry_point, record_time=False, output_not_none=False, max_tests=None
+):
     """Execute trusted code in place."""
     exec_globals = {}
     exec(code, exec_globals)
@@ -12,7 +14,9 @@ def trusted_exec(code, inputs, entry_point, record_time=False, output_not_none=F
 
     rtime = []
     ret = []
-    for inp in inputs:
+    use_inputs = deepcopy(inputs[:max_tests]) if max_tests else deepcopy(inputs)
+
+    for inp in use_inputs:
         inp = deepcopy(inp)
         if record_time:
             start = time.time()

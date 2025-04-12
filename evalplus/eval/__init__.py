@@ -252,9 +252,9 @@ def untrusted_check(
 ) -> Tuple[str, np.ndarray, np.ndarray]:
     time_limits = [max(min_time_limit, gt_time_limit_factor * t) for t in ref_time]
     if max_time_limit is not None:
-        timeout = max_time_limit
-    else:
-        timeout = min(os.getenv("EVALPLUS_TIMEOUT_PER_TASK", 60), sum(time_limits)) + 1
+        time_limits = [min(max_time_limit, t) for t in time_limits]
+
+    timeout = min(os.getenv("EVALPLUS_TIMEOUT_PER_TASK", 60), sum(time_limits)) + 1
     if not fast_check:
         timeout += 1  # extra time for data collection
 
@@ -324,10 +324,10 @@ def evaluate_files(
     for file in files:
         code = open(file, "r").read()
         stat, det = untrusted_check(
-            dataset,
-            code,
-            inputs,
-            entry_point,
+            dataset=dataset,
+            code=code,
+            inputs=inputs,
+            entry_point=entry_point,
             expected=expected,
             atol=atol,
             ref_time=ref_time,

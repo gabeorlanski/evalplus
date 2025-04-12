@@ -112,6 +112,7 @@ def load_solutions(sample_path: PathLike) -> Iterable[Dict]:
             sample["_identifier"] = (
                 sample["task_id"] + f" (line {i+1} in {sample_path})"
             )
+
             yield sample
     else:
 

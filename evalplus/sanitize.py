@@ -231,7 +231,7 @@ def extract_target_code_or_empty(code: str, entrypoint: Optional[str] = None) ->
 
         # Determine and append spacing based on the next node, if it exists
         if i < len(nodes_to_keep_info) - 1:
-            next_node, next_category = nodes_to_keep_info[i + 1]
+            _, next_category = nodes_to_keep_info[i + 1]
 
             # Apply PEP8-like spacing rules
             if current_category == "import" and next_category == "import":

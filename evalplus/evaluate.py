@@ -4,11 +4,11 @@ import os
 import pickle
 import threading
 from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from warnings import warn
-
+import copy
 import numpy as np
 from termcolor import cprint
 from tqdm import tqdm
@@ -30,6 +30,7 @@ from evalplus.eval import (
     PASS,
     FAIL,
     NOT_RAN,
+    TIMEOUT,
     compatible_eval_result,
     estimate_pass_at_k,
     untrusted_check,
@@ -45,7 +46,7 @@ DEFAULT_FAIL = (FAIL, [], [])
 
 
 def get_groundtruth(
-    problems, hashcode, tasks_only_output_not_none, disable_cache=False
+    problems, hashcode, tasks_only_output_not_none, disable_cache=False, max_tests=None
 ):
 
     tbegin = datetime.now(timezone.utc)
@@ -66,14 +67,16 @@ def get_groundtruth(
             problem["entry_point"],
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
+            max_tests=max_tests,
         )
 
         oracle["plus"], oracle["plus_time"] = trusted_exec(
             problem["prompt"] + problem["canonical_solution"],
-            problem["plus_input"],
+            problem["plus_input"] if problem["plus_input"] else problem["base_input"],
             problem["entry_point"],
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
+            max_tests=max_tests,
         )
         expected_output[task_id] = oracle
     elapsed = (datetime.now(timezone.utc) - tbegin).total_seconds()
@@ -108,22 +111,40 @@ def check_correctness(
         "solution": solution,
     }
     start_time = datetime.now(timezone.utc)
-    base_inputs = problem["base_input"]
+    base_inputs = copy.deepcopy(problem["base_input"])
     run_plus = not base_only
     run_base = not plus_only
-    plus_inputs = problem["plus_input"]
+    plus_inputs = copy.deepcopy(problem["plus_input"])
+    base_ref_time = copy.deepcopy(expected_output["base_time"])
+    plus_ref_time = copy.deepcopy(expected_output["plus_time"])
+    if not plus_inputs:
+        plus_inputs = base_inputs
     if max_test_cases is not None:
-        base_inputs = base_inputs[:max_test_cases]
-        plus_inputs = plus_inputs[:max_test_cases]
+        if base_inputs is not None:
+            base_inputs = base_inputs[:max_test_cases]
+            base_ref_time = base_ref_time[:max_test_cases]
+        else:
+            run_base = False
+        try:
+            if plus_inputs is not None:
+                plus_inputs = plus_inputs[:max_test_cases]
+                plus_ref_time = plus_ref_time[:max_test_cases]
+            else:
+                run_plus = False
+        except KeyError as e:
+            print(f"No plus inputs for {problem['task_id']}")
+            print(max_test_cases)
+            print(plus_inputs[:5])
+            raise e
     if run_base:
         ret["base"] = untrusted_check(
-            dataset,
-            solution,
-            base_inputs,
-            problem["entry_point"],
+            dataset=dataset,
+            code=solution,
+            inputs=base_inputs,
+            entry_point=problem["entry_point"],
             expected=expected_output["base"],
             atol=problem["atol"],
-            ref_time=expected_output["base_time"],
+            ref_time=base_ref_time,
             fast_check=fast_check,
             min_time_limit=min_time_limit,
             gt_time_limit_factor=gt_time_limit_factor,
@@ -134,13 +155,13 @@ def check_correctness(
 
     if run_plus:
         ret["plus"] = untrusted_check(
-            dataset,
-            solution,
-            plus_inputs,
-            problem["entry_point"],
+            dataset=dataset,
+            code=solution,
+            inputs=plus_inputs,
+            entry_point=problem["entry_point"],
             expected=expected_output["plus"],
             atol=problem["atol"],
-            ref_time=expected_output["plus_time"],
+            ref_time=plus_ref_time,
             fast_check=fast_check,
             min_time_limit=min_time_limit,
             gt_time_limit_factor=gt_time_limit_factor,
@@ -195,7 +216,7 @@ def evaluate(
             result_path = samples.replace(".jsonl", "_eval_results.json")
         else:
             result_path = samples.replace(".jsonl", ".eval_results.json")
-
+    print(result_path)
     if output_file is not None:
         result_path = output_file
 
@@ -214,7 +235,11 @@ def evaluate(
                 mini=mini, noextreme=noextreme, version=version
             )
             expected_output, get_gt_elapsed = get_groundtruth(
-                problems, dataset_hash, [], disable_cache=disable_cache
+                problems,
+                dataset_hash,
+                [],
+                disable_cache=disable_cache,
+                max_tests=max_test_cases,
             )
         elif dataset == "mbpp":
             problems = get_mbpp_plus(mini=mini, noextreme=noextreme, version=version)
@@ -226,6 +251,7 @@ def evaluate(
                 dataset_hash,
                 MBPP_OUTPUT_NOT_NONE_TASKS,
                 disable_cache=disable_cache,
+                max_tests=max_test_cases,
             )
         results = {
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -236,8 +262,10 @@ def evaluate(
         print(f"Using {max_time_limit} max timeout")
         sample_meta_map = {}
         start_time = datetime.now(timezone.utc)
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = []
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+        ) as executor:
+            futures = {}
             completion_id = Counter()
             n_samples = 0
             eval_results = defaultdict(list)  # task_id ->
@@ -272,7 +300,12 @@ def evaluate(
                     max_test_cases,
                     max_time_limit,
                 )
-                futures.append(executor.submit(check_correctness, *args))
+                future = executor.submit(check_correctness, *args)
+                futures[future] = (
+                    task_id,
+                    completion_id[task_id],
+                    sample["_identifier"],
+                )
                 completion_id[task_id] += 1
                 n_samples += 1
                 sample_meta_map[sample["_identifier"]] = sample["meta"]
@@ -293,9 +326,11 @@ def evaluate(
             threading.Thread(target=stucking_checker).start()
 
             for future in tqdm(as_completed(futures), total=n_samples):
+
                 result = future.result()
                 remainings.remove(result["_identifier"])
                 eval_results[result["task_id"]].append(result)
+
         results["execution_elapsed"] = (
             datetime.now(timezone.utc) - start_time
         ).total_seconds()
@@ -316,7 +351,11 @@ def evaluate(
                         ]
 
                     # else => simply return the only and the last fail test
-                    return [inputs[len(details) - 1]]
+                    try:
+                        return [inputs[len(details) - 1]]
+                    except Exception as e:
+                        breakpoint()
+                        return []
 
                 base_stat = NOT_RAN
                 base_details = []
@@ -334,7 +373,10 @@ def evaluate(
                 if not base_only:
                     plus_stat, plus_details, plus_timings = res.get("plus", NOT_RAN_RES)
                     plus_fail_tests = get_failed_tests(
-                        plus_stat, plus_details, problems[task_id]["plus_input"]
+                        plus_stat,
+                        plus_details,
+                        problems[task_id]["plus_input"]
+                        or problems[task_id]["base_input"],
                     )
 
                 if dataset == "mbpp":
