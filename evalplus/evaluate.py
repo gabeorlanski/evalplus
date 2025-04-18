@@ -260,6 +260,7 @@ def evaluate(
         }
         print(f"Using {max_test_cases} max tests")
         print(f"Using {max_time_limit} max timeout")
+        print(f"Using {n_workers} workers")
         sample_meta_map = {}
         start_time = datetime.now(timezone.utc)
         with ProcessPoolExecutor(
