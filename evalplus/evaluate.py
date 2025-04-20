@@ -115,27 +115,21 @@ def check_correctness(
     run_plus = not base_only
     run_base = not plus_only
     plus_inputs = copy.deepcopy(problem["plus_input"])
-    base_ref_time = copy.deepcopy(expected_output["base_time"])
-    plus_ref_time = copy.deepcopy(expected_output["plus_time"])
+    base_ref_time = expected_output["base_time"]
+    plus_ref_time = expected_output["plus_time"]
     if not plus_inputs:
         plus_inputs = base_inputs
     if max_test_cases is not None:
-        if base_inputs is not None:
+        if run_base and base_inputs is not None:
             base_inputs = base_inputs[:max_test_cases]
             base_ref_time = base_ref_time[:max_test_cases]
         else:
             run_base = False
-        try:
-            if plus_inputs is not None:
-                plus_inputs = plus_inputs[:max_test_cases]
-                plus_ref_time = plus_ref_time[:max_test_cases]
-            else:
-                run_plus = False
-        except KeyError as e:
-            print(f"No plus inputs for {problem['task_id']}")
-            print(max_test_cases)
-            print(plus_inputs[:5])
-            raise e
+        if run_plus and plus_inputs is not None:
+            plus_inputs = plus_inputs[:max_test_cases]
+            plus_ref_time = plus_ref_time[:max_test_cases]
+        else:
+            run_plus = False
     if run_base:
         ret["base"] = untrusted_check(
             dataset=dataset,
