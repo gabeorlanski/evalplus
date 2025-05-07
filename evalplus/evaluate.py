@@ -46,7 +46,7 @@ DEFAULT_FAIL = (FAIL, [], [])
 
 
 def get_groundtruth(
-    problems, hashcode, tasks_only_output_not_none, disable_cache=False, max_tests=None
+    problems, hashcode, tasks_only_output_not_none, disable_cache=False
 ):
 
     tbegin = datetime.now(timezone.utc)
@@ -67,7 +67,7 @@ def get_groundtruth(
             problem["entry_point"],
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
-            max_tests=max_tests,
+            max_tests=None,
         )
 
         oracle["plus"], oracle["plus_time"] = trusted_exec(
@@ -76,7 +76,7 @@ def get_groundtruth(
             problem["entry_point"],
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
-            max_tests=max_tests,
+            max_tests=None,
         )
         expected_output[task_id] = oracle
     elapsed = (datetime.now(timezone.utc) - tbegin).total_seconds()
