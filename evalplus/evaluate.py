@@ -233,7 +233,6 @@ def evaluate(
                 dataset_hash,
                 [],
                 disable_cache=disable_cache,
-                max_tests=max_test_cases,
             )
         elif dataset == "mbpp":
             problems = get_mbpp_plus(mini=mini, noextreme=noextreme, version=version)
@@ -245,7 +244,6 @@ def evaluate(
                 dataset_hash,
                 MBPP_OUTPUT_NOT_NONE_TASKS,
                 disable_cache=disable_cache,
-                max_tests=max_test_cases,
             )
         results = {
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
