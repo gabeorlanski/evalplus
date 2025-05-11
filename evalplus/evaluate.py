@@ -67,7 +67,6 @@ def get_groundtruth(
             problem["entry_point"],
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
-            max_tests=None,
         )
 
         oracle["plus"], oracle["plus_time"] = trusted_exec(
@@ -76,7 +75,6 @@ def get_groundtruth(
             problem["entry_point"],
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
-            max_tests=None,
         )
         expected_output[task_id] = oracle
     elapsed = (datetime.now(timezone.utc) - tbegin).total_seconds()
@@ -114,22 +112,38 @@ def check_correctness(
     base_inputs = copy.deepcopy(problem["base_input"])
     run_plus = not base_only
     run_base = not plus_only
-    plus_inputs = copy.deepcopy(problem["plus_input"])
+    plus_inputs = copy.deepcopy(problem.get("plus_input", []))
     base_ref_time = expected_output["base_time"]
     plus_ref_time = expected_output["plus_time"]
     if not plus_inputs:
         plus_inputs = base_inputs
     if max_test_cases is not None:
-        if run_base and base_inputs is not None:
-            base_inputs = base_inputs[:max_test_cases]
-            base_ref_time = base_ref_time[:max_test_cases]
+        all_inputs = base_inputs + plus_inputs
+        all_outputs = expected_output["base"] + expected_output["plus"]
+
+        all_inputs = all_inputs[:max_test_cases]
+        all_outputs = all_outputs[:max_test_cases]
+        ret["base"] = untrusted_check(
+            dataset=dataset,
+            code=solution,
+            inputs=all_inputs,
+            entry_point=problem["entry_point"],
+            expected=all_outputs,
+            atol=problem["atol"],
+            ref_time=base_ref_time,
+            fast_check=fast_check,
+            min_time_limit=min_time_limit,
+            gt_time_limit_factor=gt_time_limit_factor,
+            max_time_limit=max_time_limit,
+        )
+        if max_test_cases > len(base_inputs):
+            ret["plus"] = ret["base"]
         else:
-            run_base = False
-        if run_plus and plus_inputs is not None:
-            plus_inputs = plus_inputs[:max_test_cases]
-            plus_ref_time = plus_ref_time[:max_test_cases]
-        else:
-            run_plus = False
+            ret["plus"] = NOT_RAN_RES
+
+        ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
+        return ret
+
     if run_base:
         ret["base"] = untrusted_check(
             dataset=dataset,
@@ -352,7 +366,7 @@ def evaluate(
 
                 base_stat = NOT_RAN
                 base_details = []
-                if not base_only:
+                if not plus_only:
                     base_stat, base_details, base_timings = res["base"]
                     base_fail_tests = get_failed_tests(
                         base_stat, base_details, problems[task_id]["base_input"]
@@ -363,7 +377,7 @@ def evaluate(
                 plus_fail_tests = []
 
                 # with plus tests
-                if not base_only:
+                if not base_only and res.get("plus", NOT_RAN_RES) != NOT_RAN_RES:
                     plus_stat, plus_details, plus_timings = res.get("plus", NOT_RAN_RES)
                     plus_fail_tests = get_failed_tests(
                         plus_stat,
@@ -371,7 +385,10 @@ def evaluate(
                         problems[task_id]["plus_input"]
                         or problems[task_id]["base_input"],
                     )
-
+                else:
+                    plus_timings = []
+                    plus_details = []
+                    plus_stat = NOT_RAN
                 if dataset == "mbpp":
                     base_fail_tests = mbpp_serialize_inputs(task_id, base_fail_tests)
                     plus_fail_tests = mbpp_serialize_inputs(task_id, plus_fail_tests)
