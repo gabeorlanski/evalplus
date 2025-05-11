@@ -14,9 +14,8 @@ def trusted_exec(
 
     rtime = []
     ret = []
-    use_inputs = deepcopy(inputs[:max_tests]) if max_tests else deepcopy(inputs)
 
-    for inp in use_inputs:
+    for inp in inputs:
         inp = deepcopy(inp)
         if record_time:
             start = time.time()

@@ -46,11 +46,18 @@ DEFAULT_FAIL = (FAIL, [], [])
 
 
 def get_groundtruth(
-    problems, hashcode, tasks_only_output_not_none, disable_cache=False
+    problems,
+    hashcode,
+    tasks_only_output_not_none,
+    disable_cache=False,
+    max_test_cases=None,
 ):
 
     tbegin = datetime.now(timezone.utc)
-    cache_file = os.path.join(CACHE_DIR, f"{hashcode}.pkl")
+    if max_test_cases is not None:
+        cache_file = os.path.join(CACHE_DIR, f"{hashcode}_max_{max_test_cases}.pkl")
+    else:
+        cache_file = os.path.join(CACHE_DIR, f"{hashcode}.pkl")
     if os.path.exists(cache_file) and not disable_cache:
         print(f"Load from ground-truth from {cache_file}")
         with open(cache_file, "rb") as f:
@@ -61,6 +68,7 @@ def get_groundtruth(
     expected_output = {}
     for task_id, problem in problems.items():
         oracle = {}
+
         oracle["base"], oracle["base_time"] = trusted_exec(
             problem["prompt"] + problem["canonical_solution"],
             problem["base_input"],
@@ -68,14 +76,18 @@ def get_groundtruth(
             record_time=True,
             output_not_none=problem["entry_point"] in tasks_only_output_not_none,
         )
+        if len(problem.get("plus_input", [])) > 0:
+            oracle["plus"], oracle["plus_time"] = trusted_exec(
+                problem["prompt"] + problem["canonical_solution"],
+                problem["plus_input"],
+                problem["entry_point"],
+                record_time=True,
+                output_not_none=problem["entry_point"] in tasks_only_output_not_none,
+            )
+        else:
+            oracle["plus"] = []
+            oracle["plus_time"] = []
 
-        oracle["plus"], oracle["plus_time"] = trusted_exec(
-            problem["prompt"] + problem["canonical_solution"],
-            problem["plus_input"] if problem["plus_input"] else problem["base_input"],
-            problem["entry_point"],
-            record_time=True,
-            output_not_none=problem["entry_point"] in tasks_only_output_not_none,
-        )
         expected_output[task_id] = oracle
     elapsed = (datetime.now(timezone.utc) - tbegin).total_seconds()
 
@@ -99,7 +111,6 @@ def check_correctness(
     identifier=None,
     min_time_limit: float = DEFAULT_MIN_TIME_LIMIT,
     gt_time_limit_factor: float = DEFAULT_GT_TIME_LIMIT_FACTOR,
-    max_test_cases: Optional[int] = None,
     max_time_limit: float = None,
 ) -> Dict[str, Result]:  # {...}, "base" | "plus" -> (status, details)
     ret = {
@@ -115,34 +126,6 @@ def check_correctness(
     plus_inputs = copy.deepcopy(problem.get("plus_input", []))
     base_ref_time = expected_output["base_time"]
     plus_ref_time = expected_output["plus_time"]
-    if not plus_inputs:
-        plus_inputs = base_inputs
-    if max_test_cases is not None:
-        all_inputs = base_inputs + plus_inputs
-        all_outputs = expected_output["base"] + expected_output["plus"]
-
-        all_inputs = all_inputs[:max_test_cases]
-        all_outputs = all_outputs[:max_test_cases]
-        ret["base"] = untrusted_check(
-            dataset=dataset,
-            code=solution,
-            inputs=all_inputs,
-            entry_point=problem["entry_point"],
-            expected=all_outputs,
-            atol=problem["atol"],
-            ref_time=base_ref_time,
-            fast_check=fast_check,
-            min_time_limit=min_time_limit,
-            gt_time_limit_factor=gt_time_limit_factor,
-            max_time_limit=max_time_limit,
-        )
-        if max_test_cases > len(base_inputs):
-            ret["plus"] = ret["base"]
-        else:
-            ret["plus"] = NOT_RAN_RES
-
-        ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
-        return ret
 
     if run_base:
         ret["base"] = untrusted_check(
@@ -161,7 +144,9 @@ def check_correctness(
     else:
         ret["base"] = NOT_RAN_RES
 
-    if run_plus:
+    if ret["base"][0] == TIMEOUT:
+        ret["plus"] = NOT_RAN_RES
+    elif run_plus and len(plus_inputs) > 0:
         ret["plus"] = untrusted_check(
             dataset=dataset,
             code=solution,
@@ -179,6 +164,37 @@ def check_correctness(
         ret["plus"] = NOT_RAN_RES
     ret["elapsed"] = (datetime.now(timezone.utc) - start_time).total_seconds()
     return ret
+
+
+def get_max_test_cases(problems, max_test_cases):
+    if max_test_cases is None:
+        return problems
+
+    for task_id in problems:
+        problem = problems[task_id]
+        base_input = problem["base_input"]
+        # Use .get() with a default for cleaner handling of potentially missing "plus_input"
+        plus_input = problem.get("plus_input", [])
+        if isinstance(plus_input, dict):
+            plus_input = []
+        num_base_tests = len(base_input)
+
+        # Lines related to keep_base, keep_plus and the old 'rem' calculation are removed or replaced by the logic below.
+
+        if num_base_tests > max_test_cases:
+            # If base_input alone exceeds max_test_cases, truncate it and clear plus_input.
+            problem["base_input"] = base_input[:max_test_cases]
+            problem["plus_input"] = []
+        else:
+            # Otherwise, all base_input tests are kept.
+            # Calculate how many additional tests can be taken from plus_input.
+            num_to_take_from_plus = max_test_cases - num_base_tests
+
+            # Truncate plus_input to fill the remaining capacity.
+            # If plus_input is shorter, all of it will be taken.
+            problem["plus_input"] = plus_input[:num_to_take_from_plus]
+
+    return problems
 
 
 def evaluate(
@@ -242,31 +258,37 @@ def evaluate(
             dataset_hash = get_human_eval_plus_hash(
                 mini=mini, noextreme=noextreme, version=version
             )
+            problems = get_max_test_cases(problems, max_test_cases)
             expected_output, get_gt_elapsed = get_groundtruth(
                 problems,
                 dataset_hash,
                 [],
                 disable_cache=disable_cache,
+                max_test_cases=max_test_cases,
             )
         elif dataset == "mbpp":
             problems = get_mbpp_plus(mini=mini, noextreme=noextreme, version=version)
             dataset_hash = get_mbpp_plus_hash(
                 mini=mini, noextreme=noextreme, version=version
             )
+            problems = get_max_test_cases(problems, max_test_cases)
             expected_output, get_gt_elapsed = get_groundtruth(
                 problems,
                 dataset_hash,
                 MBPP_OUTPUT_NOT_NONE_TASKS,
                 disable_cache=disable_cache,
+                max_test_cases=max_test_cases,
             )
+
+        print(f"Using {max_test_cases} max tests")
+        print(f"Using {max_time_limit} max timeout")
+        print(f"Using {n_workers} workers")
+
         results = {
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "hash": dataset_hash,
             "eval": {},
         }
-        print(f"Using {max_test_cases} max tests")
-        print(f"Using {max_time_limit} max timeout")
-        print(f"Using {n_workers} workers")
         sample_meta_map = {}
         start_time = datetime.now(timezone.utc)
         with ProcessPoolExecutor(
@@ -304,7 +326,6 @@ def evaluate(
                     sample["_identifier"],
                     min_time_limit,
                     gt_time_limit_factor,
-                    max_test_cases,
                     max_time_limit,
                 )
                 future = executor.submit(check_correctness, *args)
@@ -361,20 +382,21 @@ def evaluate(
                     try:
                         return [inputs[len(details) - 1]]
                     except Exception as e:
-                        breakpoint()
                         return []
 
                 base_stat = NOT_RAN
                 base_details = []
+                base_ran = False
                 if not plus_only:
                     base_stat, base_details, base_timings = res["base"]
                     base_fail_tests = get_failed_tests(
                         base_stat, base_details, problems[task_id]["base_input"]
                     )
-
+                    base_ran = True
                 # initialize plus tests
                 plus_stat = NOT_RAN
                 plus_fail_tests = []
+                plus_ran = False
 
                 # with plus tests
                 if not base_only and res.get("plus", NOT_RAN_RES) != NOT_RAN_RES:
@@ -385,6 +407,7 @@ def evaluate(
                         problems[task_id]["plus_input"]
                         or problems[task_id]["base_input"],
                     )
+                    plus_ran = True
                 else:
                     plus_timings = []
                     plus_details = []
@@ -404,6 +427,8 @@ def evaluate(
                         "plus_timings": plus_timings,
                         "base_details": [bool(d) for d in base_details],
                         "plus_details": [bool(d) for d in plus_details],
+                        "base_ran": base_ran,
+                        "plus_ran": plus_ran,
                         **sample_meta_map[res["_identifier"]],
                     }
                 )
